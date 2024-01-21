@@ -50,112 +50,109 @@
       }
 
       function getVariable(value) {
-        if (
-          value instanceof WebGLActiveInfo ||
-          value instanceof WebGLBuffer ||
-          value instanceof WebGLFramebuffer ||
-          value instanceof WebGLProgram ||
-          value instanceof WebGLRenderbuffer ||
-          value instanceof WebGLShader ||
-          value instanceof WebGLShaderPrecisionFormat ||
-          value instanceof WebGLTexture ||
-          value instanceof WebGLUniformLocation ||
-          value instanceof WebGLVertexArrayObject ||
-          // In Chrome, value won't be an instanceof WebGLVertexArrayObject.
-          (value && value.constructor.name == "WebGLVertexArrayObjectOES") ||
-          typeof value === "object"
-        ) {
-          const name = value.constructor.name;
-          const list = variables[name] || (variables[name] = []);
-          let index = list.indexOf(value);
+        try {
+          if (
+            value instanceof WebGLActiveInfo ||
+            value instanceof WebGLBuffer ||
+            value instanceof WebGLFramebuffer ||
+            value instanceof WebGLProgram ||
+            value instanceof WebGLRenderbuffer ||
+            value instanceof WebGLShader ||
+            value instanceof WebGLShaderPrecisionFormat ||
+            value instanceof WebGLTexture ||
+            value instanceof WebGLUniformLocation ||
+            value instanceof WebGLVertexArrayObject ||
+            // In Chrome, value won't be an instanceof WebGLVertexArrayObject.
+            (value && value.constructor.name == "WebGLVertexArrayObjectOES") ||
+            typeof value === "object"
+          ) {
+            const name = value.constructor.name;
+            const list = variables[name] || (variables[name] = []);
+            let index = list.indexOf(value);
 
-          if (index === -1) {
-            index = list.length;
-            list.push(value);
+            if (index === -1) {
+              index = list.length;
+              list.push(value);
+            }
+
+            return name + "s[" + index + "]";
           }
-
-          return name + "s[" + index + "]";
-        }
-
+        } catch (e) {}
         return null;
       }
 
       function patch(name, object) {
-        const patched = {};
+        const mark = "__PATCHED_";
+        if (object[mark]) {
+          return object;
+        }
+        object[mark] = {};
+        const functions = [];
         for (const key in object) {
-          const value = object[key];
-          if (typeof value === "function") {
-            patched[key] = function () {
-              const result = value.apply(object, arguments);
-
-              if (frameSincePageLoad !== oldFrameCount) {
-                oldFrameCount = frameSincePageLoad;
-                trace.push("  yield;");
-              }
-
-              if (canvas.width !== oldWidth || canvas.height !== oldHeight) {
-                oldWidth = canvas.width;
-                oldHeight = canvas.height;
-                trace.push("  gl.canvas.width = " + oldWidth + ";");
-                trace.push("  gl.canvas.height = " + oldHeight + ";");
-              }
-
-              const args = Array.prototype.map.call(arguments, (arg) => {
-                if (
-                  typeof arg === "number" ||
-                  typeof arg === "boolean" ||
-                  typeof arg === "string" ||
-                  arg === null
-                ) {
-                  return JSON.stringify(arg);
-                } else if (ArrayBuffer.isView(arg)) {
-                  return `new ${
-                    arg.constructor.name
-                  }([${Array.prototype.slice.call(arg)}])`;
-                } else {
-                  const variable = getVariable(arg);
-                  if (variable !== null) {
-                    return variable;
-                  } else {
-                    console.warn(
-                      "unsupported value:",
-                      arg,
-                      `in call to ${name}.${key}`
-                    );
-                    return "null";
-                  }
-                }
-              });
-
-              let text = `${name}.${key}(${args.join(", ")});`;
-              const variable = getVariable(result);
-              if (variable !== null) text = `${variable} = ${text}`;
-              trace.push("  " + text);
-
-              if (result === null) return null;
-              if (result === undefined) return undefined;
-              // In Firefox, getExtension returns things with constructor.name == 'Object', but in
-              // Chrome getExtension returns unique constructor.names.
-              if (
-                result.constructor.name === "Object" ||
-                key == "getExtension"
-              ) {
-                return patch(variable, result);
-              }
-              return result;
-            };
-          } else {
-            // typeof value !== function
-            Object.defineProperty(patched, key, {
-              configurable: false,
-              enumerable: true,
-              get() {
-                return object[key];
-              },
-            });
+          if (typeof object[key] === "function") {
+            functions.push(key);
           }
         }
-        return patched;
+        for (const key of functions) {
+          const value = object[key];
+          object[key] = function () {
+            const result = value.apply(object, arguments);
+
+            if (frameSincePageLoad !== oldFrameCount) {
+              oldFrameCount = frameSincePageLoad;
+              trace.push("  yield;");
+            }
+
+            if (canvas.width !== oldWidth || canvas.height !== oldHeight) {
+              oldWidth = canvas.width;
+              oldHeight = canvas.height;
+              trace.push("  gl.canvas.width = " + oldWidth + ";");
+              trace.push("  gl.canvas.height = " + oldHeight + ";");
+            }
+
+            const args = Array.prototype.map.call(arguments, (arg) => {
+              if (
+                typeof arg === "number" ||
+                typeof arg === "boolean" ||
+                typeof arg === "string" ||
+                arg === null
+              ) {
+                return JSON.stringify(arg);
+              } else if (ArrayBuffer.isView(arg)) {
+                return `new ${
+                  arg.constructor.name
+                }([${Array.prototype.slice.call(arg)}])`;
+              } else {
+                const variable = getVariable(arg);
+                if (variable !== null) {
+                  return variable;
+                } else {
+                  console.warn(
+                    "unsupported value:",
+                    arg,
+                    `in call to ${name}.${key}`
+                  );
+                  return "null";
+                }
+              }
+            });
+
+            let text = `${name}.${key}(${args.join(", ")});`;
+            const variable = getVariable(result);
+            if (variable !== null) text = `${variable} = ${text}`;
+            trace.push("  " + text);
+
+            if (result === null) return null;
+            if (result === undefined) return undefined;
+            // In Firefox, getExtension returns things with constructor.name == 'Object', but in
+            // Chrome getExtension returns unique constructor.names.
+            if (result.constructor.name === "Object" || key == "getExtension") {
+              return patch(variable, result);
+            }
+            return result;
+          };
+        }
+        return object;
       }
 
       const fakeContext = patch("gl", context);
